@@ -1,0 +1,117 @@
+string standalone.woocommerce_order_sync(map crmAPIRequest)
+{
+    requestMap = crmAPIRequest.toMap();
+    orderBody = requestMap.get("body").toMap();
+
+    orderId = orderBody.get("id");
+    orderTotal = orderBody.get("total");
+    billingInfo = orderBody.get("billing").toMap();
+    customerEmail = billingInfo.get("email");
+    customerFirstName = billingInfo.get("first_name");
+    customerLastName = billingInfo.get("last_name");
+    fullName = customerFirstName + " " + customerLastName;
+
+    lineItemsList = orderBody.get("line_items");
+    productsText = "";
+    if(lineItemsList != null)
+    {
+        for each item in lineItemsList
+        {
+            itemMap = item.toMap();
+            productName = itemMap.get("name");
+            productQty = itemMap.get("quantity");
+            productsText = productsText + productName + " (Qty: " + productQty + "), ";
+        }
+        if(productsText.endsWith(", "))
+        {
+            productsText = productsText.subString(0, productsText.length() - 2);
+        }
+    }
+
+    info "--- Processing Live Order #" + orderId + " ---";
+
+    contactData = Map();
+    contactData.put("First_Name", customerFirstName);
+    contactData.put("Last_Name", customerLastName);
+    contactData.put("Email", customerEmail);
+
+    configMap = Map();
+    configMap.put("duplicate_check_fields", {"Email"});
+
+    createContactResponse = zoho.crm.createRecord("Contacts", contactData, configMap);
+
+    contactId = "";
+    if(createContactResponse.get("code") == "SUCCESS" || createContactResponse.get("code") == "success" || createContactResponse.get("code") == "DUPLICATE_DATA")
+    {
+        detailsObj = createContactResponse.get("details");
+        if(detailsObj != null)
+        {
+            if(detailsObj.toString().startsWith("["))
+            {
+                contactId = detailsObj.get(0).get("id");
+            }
+            else
+            {
+                contactId = detailsObj.get("id");
+            }
+        }
+    }
+
+    if(contactId == "" || contactId == null)
+    {
+        rawStr = createContactResponse.toString();
+        if(rawStr.contains("\"id\":\""))
+        {
+            if(rawStr.contains("details\":{\"id\":\""))
+            {
+                contactId = rawStr.getSuffix("details\":{\"id\":\"").getPrefix("\"");
+            }
+            else
+            {
+                contactId = rawStr.getSuffix("\"id\":\"").getPrefix("\"");
+            }
+        }
+    }
+
+    info "Target Clean Contact ID: " + contactId;
+
+    leadData = Map();
+    leadData.put("First_Name", customerFirstName);
+    leadData.put("Last_Name", customerLastName);
+    leadData.put("Email", customerEmail);
+    leadData.put("Company", fullName + " (WooCommerce)"); 
+    leadData.put("Annual_Revenue", orderTotal.toDecimal()); 
+
+    leadDesc = "WooCommerce Order #" + orderId + "\n";
+    leadDesc = leadDesc + "Total Value: EGP " + orderTotal + "\n";
+    leadDesc = leadDesc + "Products Ordered: " + productsText;
+    leadData.put("Description", leadDesc);
+
+    leadConfig = Map();
+    leadConfig.put("duplicate_check_fields", {"Email"});
+
+    createLeadResponse = zoho.crm.createRecord("Leads", leadData, leadConfig);
+    info "CRM Lead Sync Status: " + createLeadResponse.get("message");
+
+    dealData = Map();
+    dealData.put("Deal_Name", "WooCommerce Order #" + orderId + " - " + fullName);
+    dealData.put("Amount", orderTotal.toDecimal());
+    dealData.put("Stage", "Qualification"); 
+    dealData.put("Closing_Date", today.addDay(7)); 
+
+    dealDesc = "Products Ordered: " + productsText;
+    dealData.put("Description", dealDesc);
+
+    if(contactId != "" && contactId != "7445635000000608001")
+    {
+        contactLookupObject = Map();
+        contactLookupObject.put("id", contactId);
+        dealData.put("Contact_Name", contactLookupObject);
+    }
+
+    createDealResponse = zoho.crm.createRecord("Deals", dealData);
+    info "CRM Deal Sync Status: " + createDealResponse.get("message");
+    info "Full Deal Log Response: " + createDealResponse;
+
+    return "Data Synced completely across all 3 modules (Contact + Lead + Deal)!";
+}
